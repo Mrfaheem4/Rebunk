@@ -1,20 +1,15 @@
-import { useCallback, useRef, useState } from 'react'
-import MagazineCarousel, { type CarouselHandle } from './components/MagazineCarousel'
+import { useCallback, useState } from 'react'
+import MagazineCarousel from './components/MagazineCarousel'
 import HudOverlay from './components/HudOverlay'
 
 export default function App() {
-  const carouselRef = useRef<CarouselHandle>(null)
-  const [replayKey, setReplayKey] = useState(0)
-
-  const handleReplay = useCallback(() => {
-    carouselRef.current?.replay()
-    setReplayKey((k) => k + 1) // re-runs the HUD scramble only (not per-frame)
-  }, [])
+  const [revealed, setRevealed] = useState(false)
+  const handleReveal = useCallback(() => setRevealed(true), [])
 
   return (
     <main className="relative h-screen w-screen bg-black">
-      <MagazineCarousel ref={carouselRef} />
-      <HudOverlay replayKey={replayKey} onReplay={handleReplay} />
+      <MagazineCarousel onReveal={handleReveal} />
+      <HudOverlay revealed={revealed} />
     </main>
   )
 }

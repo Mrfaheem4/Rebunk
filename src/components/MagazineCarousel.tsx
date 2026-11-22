@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, type RefObject } from 'react'
+import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import gsap from 'gsap'
 import { POSTER_URLS, createPosterMaterials, loadPosterTextures } from '../lib/cardTextures'
@@ -81,14 +81,24 @@ const PACE = {
   slowDuration: 1.4, // real seconds the slow-down takes (starts as the cards begin landing)
 }
 
-/* ══════════════════════════════════════════════════════════════════════════ */
-
-export type CarouselHandle = { replay: () => void }
-
-type Props = {
-  /** Kept for API compatibility with App; unused in the simple disk. */
-  counterRef?: RefObject<HTMLSpanElement | null>
+/** Drag to rotate — enabled once the intro has landed on the carousel. */
+const DRAG = {
+  cardsPerScreen: 3, // dragging a full screen width turns this many cards
+  inertiaMs: 520, // release velocity is projected this far ahead before snapping (more = longer glide)
+  maxFlingCards: 8,
+  damping: 0.055, // how quickly the ring follows the drag target (per 60fps frame; lower = heavier, floatier)
 }
+
+/** Custom cursor: deep-red circle with bold "DRAG" that replaces the pointer on the whole page. */
+const CURSOR = {
+  size: 88, // px diameter of the "DRAG" circle (over a card)
+  dotSize: 12, // px diameter of the dot (everywhere else)
+  color: '#ff1a1a', // bright red
+  follow: 1, // how tightly it trails the mouse (per 60fps frame; 1 = locked to the pointer, lower = smooth trail)
+  grow: 0.2, // how fast it pops in / out
+}
+
+/* ══════════════════════════════════════════════════════════════════════════ */
 
 const rand = ([a, b]: [number, number]) => a + Math.random() * (b - a)
 
@@ -104,10 +114,19 @@ const makePath = () => {
   return new THREE.QuadraticBezierCurve3(start, control, end)
 }
 
-const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCarousel(_props, ref) {
-  const mountRef = useRef<HTMLDivElement>(null)
+type Props = {
+  /** Fired once, as the exploded cards start settling into the carousel. */
+  onReveal?: () => void
+}
 
-  useImperativeHandle(ref, () => ({ replay: () => {} }), [])
+export default function MagazineCarousel({ onReveal }: Props) {
+  const mountRef = useRef<HTMLDivElement>(null)
+  const cursorRef = useRef<HTMLDivElement>(null)
+  const cursorLabelRef = useRef<HTMLSpanElement>(null)
+  const onRevealRef = useRef(onReveal)
+  useEffect(() => {
+    onRevealRef.current = onReveal
+  }, [onReveal])
 
   useEffect(() => {
     const mount = mountRef.current!
@@ -159,9 +178,103 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       const gap = target - rot
       spin.speed = 0
       expandTl.add(
-        gsap.to(disk.rotation, { y: target, duration: ((Math.PI / 2) * gap) / SPIN_SPEED, ease: 'sine.out' }),
+        gsap.to(disk.rotation, {
+          y: target,
+          duration: ((Math.PI / 2) * gap) / SPIN_SPEED,
+          ease: 'sine.out',
+          onComplete: () => {
+            drag.target = disk.rotation.y
+            drag.enabled = true
+          },
+        }),
         expandTl.time(),
       )
+    }
+
+    /* ── drag to rotate ─────────────────────────────────────────────── */
+    const drag = { enabled: false, active: false, target: 0, lastX: 0, lastT: 0, velocity: 0 }
+    const snapToCard = (rot: number) => Math.round(rot / STEP) * STEP
+    const radPerPx = () => (STEP * DRAG.cardsPerScreen) / Math.max(mount.clientWidth, 1)
+    renderer.domElement.style.touchAction = 'none'
+
+    const onDragStart = (e: PointerEvent) => {
+      if (!drag.enabled || e.button !== 0) return
+      drag.active = true
+      drag.lastX = e.clientX
+      drag.lastT = performance.now()
+      drag.velocity = 0
+      mount.setPointerCapture(e.pointerId)
+    }
+    const onDragMove = (e: PointerEvent) => {
+      if (!drag.active) return
+      const now = performance.now()
+      const delta = (e.clientX - drag.lastX) * radPerPx()
+      drag.target += delta
+      const dtm = now - drag.lastT
+      if (dtm > 0) drag.velocity = drag.velocity * 0.4 + (delta / dtm) * 0.6
+      drag.lastX = e.clientX
+      drag.lastT = now
+    }
+    const onDragEnd = (e: PointerEvent) => {
+      if (!drag.active) return
+      drag.active = false
+      if (mount.hasPointerCapture(e.pointerId)) mount.releasePointerCapture(e.pointerId)
+      if (performance.now() - drag.lastT > 90) drag.velocity = 0 // held still before letting go
+      const maxFling = STEP * DRAG.maxFlingCards
+      const fling = THREE.MathUtils.clamp(drag.velocity * DRAG.inertiaMs, -maxFling, maxFling)
+      drag.target = snapToCard(drag.target + fling) // always land with a card centred
+    }
+    mount.addEventListener('pointerdown', onDragStart)
+    mount.addEventListener('pointermove', onDragMove)
+    mount.addEventListener('pointerup', onDragEnd)
+    mount.addEventListener('pointercancel', onDragEnd)
+
+    /* ── custom cursor: small red dot, grows into a "DRAG" circle over a card ── */
+    const cardMeshes: THREE.Mesh[] = []
+    const cursorEl = cursorRef.current!
+    const cursorLabel = cursorLabelRef.current!
+    const raycaster = new THREE.Raycaster()
+    const pointerNdc = new THREE.Vector2()
+    // Hide the native pointer everywhere (incl. buttons) while this is mounted.
+    const hideCursorStyle = document.createElement('style')
+    hideCursorStyle.textContent = '*, *::before, *::after { cursor: none !important; }'
+    document.head.appendChild(hideCursorStyle)
+    const pointer = { x: 0, y: 0, inside: false }
+    const cursor = { x: 0, y: 0, visible: 0, hover: 0 }
+
+    const onPointerMove = (e: PointerEvent) => {
+      pointer.x = e.clientX
+      pointer.y = e.clientY
+      if (!pointer.inside) {
+        cursor.x = e.clientX // first move: appear under the mouse, don't fly in
+        cursor.y = e.clientY
+      }
+      pointer.inside = true
+    }
+    const onPointerLeave = () => {
+      pointer.inside = false
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    document.documentElement.addEventListener('pointerleave', onPointerLeave)
+
+    const updateCursor = (dt: number) => {
+      let hovering = false
+      if (pointer.inside && cardMeshes.length) {
+        pointerNdc.set((pointer.x / mount.clientWidth) * 2 - 1, -(pointer.y / mount.clientHeight) * 2 + 1)
+        raycaster.setFromCamera(pointerNdc, camera)
+        hovering = raycaster.intersectObjects(cardMeshes, false).length > 0
+      }
+      const follow = 1 - Math.pow(1 - CURSOR.follow, dt * 60)
+      const grow = 1 - Math.pow(1 - CURSOR.grow, dt * 60)
+      cursor.x += (pointer.x - cursor.x) * follow
+      cursor.y += (pointer.y - cursor.y) * follow
+      cursor.visible += ((pointer.inside ? 1 : 0) - cursor.visible) * grow
+      cursor.hover += ((hovering ? 1 : 0) - cursor.hover) * grow
+      // dot size → full circle size as hover goes 0 → 1
+      const dotScale = CURSOR.dotSize / CURSOR.size
+      const scale = (dotScale + (1 - dotScale) * cursor.hover) * cursor.visible
+      cursorEl.style.transform = `translate3d(${cursor.x}px, ${cursor.y}px, 0) translate(-50%, -50%) scale(${scale})`
+      cursorLabel.style.opacity = String(Math.max(0, (cursor.hover - 0.4) / 0.6)) // text fades in late
     }
 
     ;(async () => {
@@ -173,7 +286,7 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       materials = createPosterMaterials(posters)
       const meshScales: THREE.Vector3[] = []
       const meshPositions: THREE.Vector3[] = []
-      const meshes: THREE.Mesh[] = []
+      const meshes = cardMeshes
       for (let i = 0; i < CARD_COUNT; i++) {
         const anchor = new THREE.Group()
         anchor.rotation.y = (i / CARD_COUNT) * Math.PI * 2
@@ -224,6 +337,7 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
         .to(disk.rotation, { z: CAROUSEL.tiltZ, duration: CAROUSEL.settle, ease: 'power2.inOut' }, settleAt)
         .call(brakeToCard, [], settleAt)
         .call(slowIntoCarousel, [], settleAt)
+        .call(() => onRevealRef.current?.(), [], settleAt) // HUD (logo + title) animates in with the carousel
 
       // Approach: keep dollying in (and levelling to the horizon) all the way
       // until the front card sits in the centre of the screen.
@@ -246,6 +360,10 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       last = now
       expandTl?.timeScale(pace.value)
       disk.rotation.y += spin.speed * pace.value * dt
+      if (drag.enabled) {
+        disk.rotation.y += (drag.target - disk.rotation.y) * (1 - Math.pow(1 - DRAG.damping, dt * 60))
+      }
+      updateCursor(dt)
       renderer.render(scene, camera)
     })
 
@@ -255,6 +373,13 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       expandTl?.kill()
       paceTween?.kill()
       window.removeEventListener('resize', resize)
+      window.removeEventListener('pointermove', onPointerMove)
+      mount.removeEventListener('pointerdown', onDragStart)
+      mount.removeEventListener('pointermove', onDragMove)
+      mount.removeEventListener('pointerup', onDragEnd)
+      mount.removeEventListener('pointercancel', onDragEnd)
+      document.documentElement.removeEventListener('pointerleave', onPointerLeave)
+      hideCursorStyle.remove()
       materials.forEach((m) => m.dispose())
       posters.forEach((t) => t?.dispose())
       geometry.dispose()
@@ -263,7 +388,20 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
     }
   }, [])
 
-  return <div ref={mountRef} className="fixed inset-0 z-0 h-screen w-screen" />
-})
-
-export default MagazineCarousel
+  return (
+    <>
+      <div ref={mountRef} className="fixed inset-0 z-0 h-screen w-screen" />
+      {/* Custom hover cursor — positioned/scaled every frame by the loop above. */}
+      <div
+        ref={cursorRef}
+        aria-hidden
+        className="pointer-events-none fixed left-0 top-0 z-20 flex select-none items-center justify-center rounded-full font-sans text-[0.875rem] font-bold uppercase tracking-[-0.04em] text-black"
+        style={{ width: CURSOR.size, height: CURSOR.size, backgroundColor: CURSOR.color, transform: 'scale(0)', willChange: 'transform' }}
+      >
+        <span ref={cursorLabelRef} style={{ opacity: 0 }}>
+          Drag
+        </span>
+      </div>
+    </>
+  )
+}

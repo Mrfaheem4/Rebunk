@@ -4,7 +4,8 @@
   --color-crimson: #ff3322;
   --color-paper: #f4f1ea;
   --color-ink: #111111;
-  --font-mono: "Space Mono", "IBM Plex Mono", ui-monospace, monospace;
+  --font-sans: "General Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "General Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
 html,
@@ -15,4 +16,10 @@ body,
   background: #000000;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+/* Typeface: General Sans — kerning -4% across the whole page */
+body {
+  font-family: var(--font-sans);
+  letter-spacing: -0.04em;
 }
