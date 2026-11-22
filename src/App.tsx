@@ -4,7 +4,6 @@ import HudOverlay from './components/HudOverlay'
 
 export default function App() {
   const carouselRef = useRef<CarouselHandle>(null)
-  const counterRef = useRef<HTMLSpanElement>(null)
   const [replayKey, setReplayKey] = useState(0)
 
   const handleReplay = useCallback(() => {
@@ -14,8 +13,8 @@ export default function App() {
 
   return (
     <main className="relative h-screen w-screen bg-black">
-      <MagazineCarousel ref={carouselRef} counterRef={counterRef} />
-      <HudOverlay replayKey={replayKey} onReplay={handleReplay} counterRef={counterRef} />
+      <MagazineCarousel ref={carouselRef} />
+      <HudOverlay replayKey={replayKey} onReplay={handleReplay} />
     </main>
   )
 }

@@ -1,16 +1,16 @@
-import { useRef, type RefObject } from 'react'
+import { useRef } from 'react'
 import { useScramble } from '../hooks/useScramble'
 
 type Props = {
   replayKey: number
   onReplay: () => void
-  /** The carousel writes "03 / 12" straight into this node (no re-render). */
-  counterRef: RefObject<HTMLSpanElement | null>
 }
 
 const HUD_SCRAMBLE_MS = 1000
+/** File lives in /public/logo — the name has spaces/parens, so it's URL-encoded. */
+const LOGO_URL = encodeURI('/logo/Rebunk _ Logo (1).svg')
 
-export default function HudOverlay({ replayKey, onReplay, counterRef }: Props) {
+export default function HudOverlay({ replayKey, onReplay }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   useScramble(rootRef, replayKey, HUD_SCRAMBLE_MS)
 
@@ -19,9 +19,9 @@ export default function HudOverlay({ replayKey, onReplay, counterRef }: Props) {
       ref={rootRef}
       className="pointer-events-none fixed inset-0 z-10 h-screen w-screen select-none font-mono text-[0.75rem] uppercase leading-[1.35] tracking-[0.08em] text-crimson sm:text-[0.8125rem]"
     >
-      {/* Top-left */}
+      {/* Top-left: Rebunk logo (white wordmark) */}
       <div className="absolute left-[1.25rem] top-[1.125rem] sm:left-[1.75rem] sm:top-[1.5rem]">
-        <span data-scramble="TYPE 01 (type-01.com)" className="whitespace-pre" />
+        <img src={LOGO_URL} alt="Rebunk" className="block h-[2.75rem] w-auto sm:h-[3.75rem]" draggable={false} />
       </div>
 
       {/* Top-right: replay */}
@@ -37,14 +37,6 @@ export default function HudOverlay({ replayKey, onReplay, counterRef }: Props) {
       <div className="absolute bottom-[1.125rem] left-[1.25rem] flex flex-col sm:bottom-[1.5rem] sm:left-[1.75rem]">
         <span data-scramble="TYPEONE MAGAZINE" className="whitespace-pre" />
         <span data-scramble="September 2025" className="whitespace-pre" />
-      </div>
-
-      {/* Top-center: active card + interaction hint (kept clear of the front card) */}
-      <div className="absolute left-1/2 top-[1.125rem] hidden -translate-x-1/2 flex-col items-center text-crimson/70 sm:top-[1.5rem] sm:flex">
-        <span ref={counterRef} className="tabular-nums text-crimson">
-          01 / 12
-        </span>
-        <span data-scramble="Drag / Scroll / ← →" className="whitespace-pre" />
       </div>
 
       {/* Bottom-right */}

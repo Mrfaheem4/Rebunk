@@ -32,23 +32,53 @@ const EXPANDED_TILT_Z = 0.1
  * All distances are in disk-local units; ranges are [min, max].
  */
 const EXPLODE = {
-  delay: 0, // seconds after the expand FINISHES — 0 = explode the instant it completes
+  delay: -0.12, // seconds relative to the expand finishing — negative = slight overlap
   duration: 1.8,
   ease: 'power2.out',
   stagger: 0, // max random start offset per card (0 = all launch together)
-  height: [6, 12.5] as [number, number], // how far up/down each card travels
-  outward: [1.2, 4] as [number, number], // extra radial push away from the centre
-  sideways: [-1.5, 1.5] as [number, number], // drift along the ring
+  height: [4, 8.5] as [number, number], // how far up/down each card travels
+  outward: [0.8, 2.8] as [number, number], // extra radial push away from the centre
+  sideways: [-1, 1] as [number, number], // drift along the ring
 }
 
 /**
- * Approach: runs across the whole expand + explosion. The camera dollies in
- * while the disk levels out to the horizon (tilt X → 0).
+ * Return: after reaching the end of its path, each card travels back along the
+ * same path into its ring slot — the ring becomes the carousel.
+ */
+const RETURN = {
+  hold: 0.6, // pause at the far end of the path before coming back (timeline seconds — ÷ PACE.speed for real time)
+  duration: 1.8,
+  ease: 'power2.inOut',
+}
+
+/** Final carousel state — reached as the cards land back in the ring. */
+/** Ring radius the cards land on at the end (smaller than EXPANDED_RADIUS = tighter carousel). */
+const FINAL_RADIUS = 5
+
+const CAROUSEL = {
+  tiltZ: 0, // level the diagonal roll
+  settle: 1.6, // seconds the roll levels / spin brakes, ending around the landing
+}
+const STEP = (Math.PI * 2) / CARD_COUNT // angle between neighbouring cards
+
+/**
+ * Approach: runs across the whole sequence (expand → explode → return). The
+ * camera dollies in while the disk levels out to the horizon (tilt X → 0).
  */
 const APPROACH = {
   ease: 'power2.inOut',
-  cameraZ: 18, // final camera distance (starts at CAMERA_Z)
+  cameraZ: FINAL_RADIUS + 2.9, // final camera distance — 2.9 in front of the centre card so it fills the screen
   tiltX: 0, // final forward tilt — 0 = camera on the horizon
+}
+
+/**
+ * Pace: plays the whole sequence (cards, spin, camera) faster, then eases back
+ * down to normal speed as the cards land, so it glides into the carousel.
+ */
+const PACE = {
+  speed: 2.4, // overall speed multiplier during the sequence
+  slowTo: 0.6, // speed it eases down to while settling into the carousel
+  slowDuration: 1.4, // real seconds the slow-down takes (starts as the cards begin landing)
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -108,6 +138,31 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
     let posters: (THREE.Texture | null)[] = []
     let materials: THREE.Material[] = []
     let expandTl: gsap.core.Timeline | null = null
+    const spin = { speed: SPIN_SPEED }
+    /** Overall playback speed — scales the main timeline and the free spin together. */
+    const pace = { value: PACE.speed }
+    let paceTween: gsap.core.Tween | null = null
+
+    const slowIntoCarousel = () => {
+      paceTween = gsap.to(pace, { value: PACE.slowTo, duration: PACE.slowDuration, ease: 'power2.out' })
+    }
+
+    // Brake the spin so it stops exactly with a card facing the camera.
+    // sine.out starts at velocity (π/2)·gap/duration — matched to the spin
+    // speed, so there's no jolt. The tween lives inside the main timeline so
+    // the pace multiplier applies to it too.
+    const brakeToCard = () => {
+      if (!expandTl) return
+      const rot = disk.rotation.y
+      const desiredGap = (SPIN_SPEED * CAROUSEL.settle * 2) / Math.PI
+      const target = Math.ceil((rot + desiredGap) / STEP) * STEP
+      const gap = target - rot
+      spin.speed = 0
+      expandTl.add(
+        gsap.to(disk.rotation, { y: target, duration: ((Math.PI / 2) * gap) / SPIN_SPEED, ease: 'sine.out' }),
+        expandTl.time(),
+      )
+    }
 
     ;(async () => {
       posters = await loadPosterTextures(anisotropy)
@@ -134,32 +189,47 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       expandTl = gsap
         .timeline({ delay: EXPAND.delay, defaults: { duration: EXPAND.duration, ease: EXPAND.ease } })
         .to(meshScales, { y: 1 }, 0)
-        .to(meshPositions, { z: EXPANDED_RADIUS }, 0)
+        // ring widening finishes exactly when the explosion takes over the positions
+        .to(meshPositions, { z: EXPANDED_RADIUS, duration: EXPAND.duration + Math.min(EXPLODE.delay, 0) }, 0)
         .to(disk.rotation, { z: EXPANDED_TILT_Z }, 0)
 
       // Explosion: every card travels along its own random up/down path.
       // Explode right after the expand finishes.
       const explodeAt = EXPAND.duration + EXPLODE.delay
+      // Then each card comes back along the same path into its ring slot.
+      const returnAt = explodeAt + EXPLODE.stagger + EXPLODE.duration + RETURN.hold
+      const landAt = returnAt + RETURN.duration
+      // Shrink the ring to FINAL_RADIUS while the cards come back.
+      const ring = { shrink: 0 }
+      expandTl.to(ring, { shrink: EXPANDED_RADIUS - FINAL_RADIUS, duration: RETURN.duration, ease: RETURN.ease }, returnAt)
       for (const mesh of meshes) {
         const path = makePath()
         const progress = { t: 0 }
-        expandTl.to(
-          progress,
-          {
-            t: 1,
-            duration: EXPLODE.duration,
-            ease: EXPLODE.ease,
-            onUpdate: () => path.getPoint(progress.t, mesh.position),
-          },
-          explodeAt + Math.random() * EXPLODE.stagger,
-        )
+        const follow = () => {
+          path.getPoint(progress.t, mesh.position)
+          mesh.position.z -= ring.shrink // pulls the ring tighter during the return
+        }
+        expandTl
+          .to(
+            progress,
+            { t: 1, duration: EXPLODE.duration, ease: EXPLODE.ease, onUpdate: follow },
+            explodeAt + Math.random() * EXPLODE.stagger,
+          )
+          .to(progress, { t: 0, duration: RETURN.duration, ease: RETURN.ease, onUpdate: follow }, returnAt)
       }
 
-      // Approach: dolly in + level to the horizon over the entire sequence.
-      const approachDuration = explodeAt + EXPLODE.stagger + EXPLODE.duration
+      // Carousel: level the roll and brake the spin onto a card as the cards land.
+      const settleAt = landAt - CAROUSEL.settle
       expandTl
-        .to(camera.position, { z: APPROACH.cameraZ, duration: approachDuration, ease: APPROACH.ease }, 0)
-        .to(disk.rotation, { x: APPROACH.tiltX, duration: approachDuration, ease: APPROACH.ease }, 0)
+        .to(disk.rotation, { z: CAROUSEL.tiltZ, duration: CAROUSEL.settle, ease: 'power2.inOut' }, settleAt)
+        .call(brakeToCard, [], settleAt)
+        .call(slowIntoCarousel, [], settleAt)
+
+      // Approach: keep dollying in (and levelling to the horizon) all the way
+      // until the front card sits in the centre of the screen.
+      expandTl
+        .to(camera.position, { z: APPROACH.cameraZ, duration: landAt, ease: APPROACH.ease }, 0)
+        .to(disk.rotation, { x: APPROACH.tiltX, duration: landAt, ease: APPROACH.ease }, 0)
     })()
 
     const resize = () => {
@@ -174,7 +244,8 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       const now = performance.now()
       const dt = Math.min((now - last) / 1000, 1 / 20)
       last = now
-      disk.rotation.y += SPIN_SPEED * dt
+      expandTl?.timeScale(pace.value)
+      disk.rotation.y += spin.speed * pace.value * dt
       renderer.render(scene, camera)
     })
 
@@ -182,6 +253,7 @@ const MagazineCarousel = forwardRef<CarouselHandle, Props>(function MagazineCaro
       disposed = true
       renderer.setAnimationLoop(null)
       expandTl?.kill()
+      paceTween?.kill()
       window.removeEventListener('resize', resize)
       materials.forEach((m) => m.dispose())
       posters.forEach((t) => t?.dispose())
