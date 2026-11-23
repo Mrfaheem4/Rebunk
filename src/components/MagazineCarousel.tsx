@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import gsap from 'gsap'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { POSTER_URLS, createPosterMaterials, loadPosterTextures } from '../lib/cardTextures'
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -79,6 +83,16 @@ const PACE = {
   speed: 2.4, // overall speed multiplier during the sequence
   slowTo: 0.6, // speed it eases down to while settling into the carousel
   slowDuration: 1.4, // real seconds the slow-down takes (starts as the cards begin landing)
+}
+
+/**
+ * Depth of field: the front card stays sharp; blur grows with distance behind it.
+ * Blur ≈ depthBehindFrontCard × aperture (in screen-UV units), capped at maxBlur.
+ */
+const DEPTH = {
+  aperture: 0.0002, // subtle — higher = shallower focus, back cards blur more
+  fadeIn: 1.6, // seconds the blur takes to fade in once the carousel has settled
+  maxBlur: 0.003, // cap so the far side never turns to mush
 }
 
 /** Drag to rotate — enabled once the intro has landed on the carousel. */
@@ -185,6 +199,8 @@ export default function MagazineCarousel({ onReveal }: Props) {
           onComplete: () => {
             drag.target = disk.rotation.y
             drag.enabled = true
+            // carousel established → ease the depth blur in
+            depthTween = gsap.to(depth, { amount: 1, duration: DEPTH.fadeIn, ease: 'power2.inOut' })
           },
         }),
         expandTl.time(),
@@ -192,6 +208,8 @@ export default function MagazineCarousel({ onReveal }: Props) {
     }
 
     /* ── drag to rotate ─────────────────────────────────────────────── */
+    const depth = { amount: 0 } // 0 = no blur during the intro, 1 = full depth of field
+    let depthTween: gsap.core.Tween | null = null
     const drag = { enabled: false, active: false, target: 0, lastX: 0, lastT: 0, velocity: 0 }
     const snapToCard = (rot: number) => Math.round(rot / STEP) * STEP
     const radPerPx = () => (STEP * DRAG.cardsPerScreen) / Math.max(mount.clientWidth, 1)
@@ -346,8 +364,27 @@ export default function MagazineCarousel({ onReveal }: Props) {
         .to(disk.rotation, { x: APPROACH.tiltX, duration: landAt, ease: APPROACH.ease }, 0)
     })()
 
+    /* ── depth of field: front card sharp, cards further back blur ─────── */
+    const composer = new EffectComposer(renderer)
+    composer.renderTarget1.samples = 4 // keep MSAA edges through the post chain
+    composer.renderTarget2.samples = 4
+    composer.addPass(new RenderPass(scene, camera))
+    const bokeh = new BokehPass(scene, camera, {
+      focus: CAMERA_Z - FINAL_RADIUS,
+      aperture: DEPTH.aperture,
+      maxblur: DEPTH.maxBlur,
+    })
+    composer.addPass(bokeh)
+    const bokehUniforms = bokeh.uniforms as Record<string, THREE.IUniform<number>>
+    const bokehFocus = bokehUniforms.focus
+    const bokehAperture = bokehUniforms.aperture
+    composer.addPass(new OutputPass()) // sRGB conversion after the blur
+    composer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    composer.setSize(mount.clientWidth, mount.clientHeight)
+
     const resize = () => {
       renderer.setSize(mount.clientWidth, mount.clientHeight)
+      composer.setSize(mount.clientWidth, mount.clientHeight)
       camera.aspect = mount.clientWidth / mount.clientHeight
       camera.updateProjectionMatrix()
     }
@@ -364,7 +401,11 @@ export default function MagazineCarousel({ onReveal }: Props) {
         disk.rotation.y += (drag.target - disk.rotation.y) * (1 - Math.pow(1 - DRAG.damping, dt * 60))
       }
       updateCursor(dt)
-      renderer.render(scene, camera)
+      // Keep the focal plane on the front of the ring as the camera dollies in.
+      bokehFocus.value = camera.position.z - FINAL_RADIUS
+      bokehAperture.value = DEPTH.aperture * depth.amount
+      bokeh.enabled = depth.amount > 0.001 // no blur (and no cost) until the carousel settles
+      composer.render(dt)
     })
 
     return () => {
@@ -372,6 +413,7 @@ export default function MagazineCarousel({ onReveal }: Props) {
       renderer.setAnimationLoop(null)
       expandTl?.kill()
       paceTween?.kill()
+      depthTween?.kill()
       window.removeEventListener('resize', resize)
       window.removeEventListener('pointermove', onPointerMove)
       mount.removeEventListener('pointerdown', onDragStart)
@@ -383,6 +425,8 @@ export default function MagazineCarousel({ onReveal }: Props) {
       materials.forEach((m) => m.dispose())
       posters.forEach((t) => t?.dispose())
       geometry.dispose()
+      bokeh.dispose()
+      composer.dispose()
       renderer.dispose()
       renderer.domElement.remove()
     }

@@ -45,11 +45,14 @@ export default function HudOverlay({ revealed }: Props) {
   return (
     <div className="pointer-events-none fixed inset-0 z-10 h-screen w-screen select-none font-sans tracking-[-0.04em] text-white">
       {/* Top-left: Rebunk logo */}
-      <div className="absolute left-[1.25rem] top-[1.125rem] sm:left-[1.75rem] sm:top-[1.5rem]">
+      {/* Same left offset as the title. The SVG has built-in left padding (ink starts at
+          x=139 of a 235-tall viewBox ≈ 0.5915 × height), so a negative margin pulls the
+          visible "R" flush with the title text. */}
+      <div className="absolute left-[1.25rem] top-[1.125rem] sm:left-[2.5rem] sm:top-[1.5rem]">
         <img
           src={LOGO_URL}
           alt="Rebunk"
-          className="block h-[2.125rem] w-auto will-change-transform sm:h-[2.75rem]"
+          className="-ml-[1.257rem] block h-[2.125rem] w-auto will-change-transform sm:-ml-[1.627rem] sm:h-[2.75rem]"
           style={logoStyle}
           draggable={false}
         />
